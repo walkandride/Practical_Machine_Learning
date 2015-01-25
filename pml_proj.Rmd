@@ -1,0 +1,107 @@
+---
+title: "HAR Analysis"
+output: html_document
+---
+
+##### Summary
+Given a sample data measured from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, predict the manner in which they did the exercise. This is the "classe" variable in the training set.
+
+##### Load and explore the data.
+```{r message=FALSE, warning=FALSE}
+# clear all variables
+rm(list = ls(all = TRUE))
+
+library(caret)
+library(sqldf)
+set.seed(8675309)
+
+pml.training = read.csv("pml-training.csv", na.strings = c("NA","#DIV/0!"))
+pml.testing = read.csv("pml-testing.csv", na.strings = c("NA","#DIV/0!"))
+# remove periods from column names as sqldf does not like them
+colnames(pml.training) <- gsub("\\."
+                               ,"_"
+                               ,colnames(pml.training))
+
+inTrain <- createDataPartition(y=pml.training$classe, p=0.7, list=FALSE)
+
+training <- pml.training[inTrain,]
+testing <- pml.training[-inTrain,]
+
+summary(training)
+names(training)
+head(training)
+```
+
+##### Prep data and build model based upon training data.
+```{r}
+# remove first seven columns -- appear to be insignificant
+filteredDescr <- training[, c(-1:-7)]
+
+# loop through columns identify those where NA count > 70% of the #rows
+vec <- character(0)
+threshold <- nrow(filteredDescr) * .7
+for (i in 1:length(colnames(filteredDescr))) {
+  sqlcol <- colnames(filteredDescr)[i]
+  sql <- sprintf("SELECT COUNT(*) FROM filteredDescr WHERE %s IS NULL", sqlcol)
+  numNA <- sqldf(sql)
+  # identify columns to remove since they are mostly empty
+  if (numNA > threshold) {
+    vec <- c(vec, sqlcol)
+  }
+}
+
+# remove columns that are mostly empty
+filteredDescr <- filteredDescr[, !colnames(filteredDescr) %in% vec]
+
+# identify and remove zero or near-zero variance predictors
+nzv <- nearZeroVar(filteredDescr)
+if (length(nzv) > 0) {
+  filteredDescr <- training[, -nzv]
+}
+
+#summary(filteredDescr)
+
+outcome_var <- length(names(filteredDescr))
+
+# define training control, k-fold cross validation
+train_control <- trainControl(method="cv", number=3)
+
+# train the model using random forest
+model <- train(classe ~ .
+               , data=filteredDescr
+               , trControl=train_control
+               , method="rf")
+model
+
+# make predictions against testing data set
+predict_prep <- testing[,names(filteredDescr)]
+predictions <- predict(model, predict_prep[,c(-outcome_var)])
+# summarize results
+confusionMatrix(predictions, testing$classe)
+
+```
+
+##### Apply model to test data set.
+```{r}
+pml_write_files = function(x) {
+  n = length(x)
+  for (i in 1:n) {
+    filename = paste0("problem_id_"
+                      ,i
+                      ,".txt")
+    write.table(x[i]
+                ,file=filename
+                ,quote=FALSE
+                ,row.names=FALSE
+                ,col.names=FALSE)
+  }
+}
+
+# make predictions against testing data set
+predict_cols <- names(filteredDescr[,!names(filteredDescr) %in% c("classe")])
+predict_prep_test <- pml.testing[, predict_cols]
+predictions_test <- predict(model, predict_prep_test)
+
+# write answers to separate files
+pml_write_files(predictions_test)
+```
